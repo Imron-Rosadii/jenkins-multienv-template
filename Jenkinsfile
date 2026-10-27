@@ -167,13 +167,11 @@ pipeline {
             steps {
                 sh '''
                     set -eu
-
-                    test -s src/index.html
+                    test -s src/index.html.template
+                    test -s deploy/10-render-template.sh
                     test -s Dockerfile
                     test -s tests/healthcheck.sh
-
                     grep -qi '^FROM nginx:' Dockerfile
-
                     echo "Source validation passed."
                 '''
             }
