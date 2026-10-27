@@ -185,16 +185,16 @@ pipeline {
                     String imageRef =
                         "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}"
 
+                    String appEnv = env.BRANCH_NAME.toUpperCase()
+
                     sh """
                         set -eu
-                        docker build -t '${imageRef}' .
-                        docker build \
-                            --build-arg APP_ENV='${env.BRANCH_NAME.toUpperCase()}' \
-                            -t '${imageRef}' .
+                        docker build --build-arg APP_ENV='${appEnv}' -t '${imageRef}' .
                         docker image inspect '${imageRef}' >/dev/null
                     """
 
                     echo "Built image: ${imageRef}"
+                    echo "Application environment: ${appEnv}"
                 }
             }
         }
