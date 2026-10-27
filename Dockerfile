@@ -5,6 +5,8 @@ ARG APP_ENV=DEVELOPMENT
 ENV APP_ENV=${APP_ENV}
 
 COPY src/index.html.template /usr/share/nginx/html/index.html.template
-COPY --chmod=755 deploy/10-render-template.sh /docker-entrypoint.d/10-render-template.sh
+COPY deploy/10-render-template.sh /docker-entrypoint.d/10-render-template.sh
+
+RUN chmod +x /docker-entrypoint.d/10-render-template.sh
 
 EXPOSE 80
