@@ -8,6 +8,6 @@
   <body>
     <h1>Jenkins CI/CD berhasil!</h1>
     <p>Project ini menggunakan Development, Staging, dan Production.</p>
-    <p id="environment">Environment: belum ditentukan</p>
+    <p>Environment: ${APP_ENV}</p>
   </body>
 </html>

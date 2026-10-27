@@ -188,6 +188,9 @@ pipeline {
                     sh """
                         set -eu
                         docker build -t '${imageRef}' .
+                        docker build \
+                            --build-arg APP_ENV='${env.BRANCH_NAME.toUpperCase()}' \
+                            -t '${imageRef}' .
                         docker image inspect '${imageRef}' >/dev/null
                     """
 
