@@ -9,33 +9,63 @@
  * - /var/run/docker.sock mounted
  */
 
-void testDockerImage(String imageRef, String candidateName) {
+void testDockerImage(
+    String imageRef,
+    String candidateName,
+    String expectedEnv
+) {
     withEnv([
         "IMAGE_REF=${imageRef}",
-        "CANDIDATE_NAME=${candidateName}"
+        "CANDIDATE_NAME=${candidateName}",
+        "EXPECTED_ENV=${expectedEnv}"
     ]) {
         sh '''
             set -eu
 
-            docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+            cleanup() {
+                docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+            }
+
+            cleanup
+            trap cleanup EXIT
 
             echo "Testing image: $IMAGE_REF"
+            echo "Expected environment: $EXPECTED_ENV"
 
             docker run -d \
                 --name "$CANDIDATE_NAME" \
                 "$IMAGE_REF" >/dev/null
+            OK=0
 
-            if docker exec "$CANDIDATE_NAME" \
-                wget -q -O /dev/null http://127.0.0; then
-                echo "IMAGE TEST PASSED"
-            else
+            for i in $(seq 1 15); do
+                if docker exec "$CANDIDATE_NAME" \
+                    wget -q -O /dev/null http://127.0.0.1/; then
+                    OK=1
+                    break
+                fi
+
+                sleep 2
+            done
+
+            if [ "$OK" -ne 1 ]; then
+                echo "ERROR: HTTP health check failed."
                 docker logs "$CANDIDATE_NAME" || true
-                docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true
-                echo "IMAGE TEST FAILED"
                 exit 1
             fi
 
-            docker rm -f "$CANDIDATE_NAME" >/dev/null
+            HTML=$(docker exec "$CANDIDATE_NAME" \
+                wget -q -O - http://127.0.0.1/)
+
+            if ! printf '%s\n' "$HTML" |
+                grep -Fq "Environment: $EXPECTED_ENV"; then
+                echo "ERROR: Deployed environment content mismatch."
+                echo "Expected: Environment: $EXPECTED_ENV"
+                printf '%s\n' "$HTML"
+                exit 1
+            fi
+
+            echo "IMAGE TEST PASSED"
+            echo "Environment content check PASSED"
         '''
     }
 }
@@ -43,7 +73,8 @@ void testDockerImage(String imageRef, String candidateName) {
 void deployEnvironment(
     String targetContainer,
     String targetPort,
-    String imageRef
+    String imageRef,
+    String expectedEnv
 ) {
     String candidateName =
         "${targetContainer}-candidate-${env.BUILD_NUMBER}"
@@ -51,83 +82,23 @@ void deployEnvironment(
     String backupName =
         "${targetContainer}-previous-${env.BUILD_NUMBER}"
 
-    // Test again immediately before deployment.
-    testDockerImage(imageRef, candidateName)
+    // Test image before touching the current release.
+    testDockerImage(imageRef, candidateName, expectedEnv)
 
     withEnv([
         "TARGET_CONTAINER=${targetContainer}",
         "TARGET_PORT=${targetPort}",
         "IMAGE_REF=${imageRef}",
-        "BACKUP_NAME=${backupName}"
-    ]) {
-        sh '''
-            set -eu
-
-            # Never overwrite an existing backup.
-            if docker inspect "$BACKUP_NAME" >/dev/null 2>&1; then
-                echo "ERROR: Backup already exists: $BACKUP_NAME"
-                exit 1
-            fi
-
-            HAD_OLD=false
-
-            restore_previous() {
-                if [ "$HAD_OLD" = "true" ]; then
-                    echo "Restoring previous release..."
-
-                    docker rename "$BACKUP_NAME" "$TARGET_CONTAINER"
-                    docker update --restart=unless-stopped "$TARGET_CONTAINER"
-                    docker start "$TARGET_CONTAINER"
-
-                    echo "Previous release restored."
-                fi
-            }
-
-            # Preserve the current release before replacing it.
-            if docker inspect "$TARGET_CONTAINER" >/dev/null 2>&1; then
-                docker update --restart=no "$TARGET_CONTAINER"
-                docker stop "$TARGET_CONTAINER"
-                docker rename "$TARGET_CONTAINER" "$BACKUP_NAME"
-
-                HAD_OLD=true
-                echo "Previous release saved as $BACKUP_NAME"
-            else
-                echo "No previous release exists."
-            fi
-
-            # Start the new release.
-            if docker run -d \
-                --name "$TARGET_CONTAINER" \
-                --restart unless-stopped \
-                -p "$TARGET_PORT:80" \
-                "$IMAGE_REF"; then
-
-                sleep 2
-
-                if docker exec "$TARGET_CONTAINER" \
-                    wget -q -O /dev/null http://127.0.0; then
-
-                    echo "DEPLOYMENT VERIFIED"
-                    echo "Container: $TARGET_CONTAINER"
-                    echo "Image: $IMAGE_REF"
-                    echo "Port: $TARGET_PORT"
-
-                    # Keep the previous container as a backup.
-                else
-                    echo "ERROR: Health check failed."
-                    docker logs "$TARGET_CONTAINER" || true
-                    docker rm -f "$TARGET_CONTAINER" >/dev/null 2>&1 || true
-
-                    restore_previous
-                    exit 1
-                fi
-            else
-                echo "ERROR: Failed to start new release."
-                restore_previous
-                exit 1
-            fi
-        '''
-    }
+        "BACKUP_NAME=${backupName}",
+        "EXPECTED_ENV=${expectedEnv}",
+        "DEPLOYMENT_ID=${env.BUILD_TAG}-${targetContainer}"
+]) {
+    sh '''
+        set -eu
+        flock -x /var/jenkins_home/deployment.lock \
+            sh deploy/deploy-container.sh
+    '''
+}
 }
 
 pipeline {
@@ -172,6 +143,10 @@ pipeline {
                     test -s Dockerfile
                     test -s tests/healthcheck.sh
                     grep -qi '^FROM nginx:' Dockerfile
+                    test -s deploy/deploy-container.sh
+                    sh -n deploy/10-render-template.sh
+                    sh -n deploy/deploy-container.sh
+                    sh -n tests/healthcheck.sh
                     echo "Source validation passed."
                 '''
             }
@@ -203,10 +178,21 @@ pipeline {
                     String imageRef =
                         "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}"
 
-                    String testContainer =
-                        "${env.APP_NAME}-test-${env.BUILD_NUMBER}"
+                    String safeBranch = env.BRANCH_NAME.replaceAll(
+                        '[^a-zA-Z0-9_.-]',
+                        '-'
+                    )
 
-                    testDockerImage(imageRef, testContainer)
+                    String testContainer =
+                        "${env.APP_NAME}-test-${safeBranch}-${env.BUILD_NUMBER}"
+
+                    String expectedEnv = env.BRANCH_NAME.toUpperCase()
+
+                    testDockerImage(
+                        imageRef,
+                        testContainer,
+                        expectedEnv
+                    )
                 }
             }
         }
@@ -232,7 +218,8 @@ pipeline {
                     deployEnvironment(
                         "${env.APP_NAME}-development",
                         '8083',
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}"
+                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}",
+                        'DEVELOPMENT'
                     )
                 }
             }
@@ -247,7 +234,8 @@ pipeline {
                     deployEnvironment(
                         "${env.APP_NAME}-staging",
                         '8084',
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}"
+                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}",
+                        'STAGING'
                     )
                 }
             }
@@ -262,7 +250,8 @@ pipeline {
                     deployEnvironment(
                         "${env.APP_NAME}-production",
                         '8085',
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}"
+                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}",
+                        'PRODUCTION'
                     )
                 }
             }
