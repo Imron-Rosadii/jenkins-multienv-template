@@ -4,6 +4,7 @@ set -eu
 : "${TARGET_CONTAINER:?TARGET_CONTAINER is required}"
 
 KEEP_BACKUPS=2
+CLEANUP_MODE=${CLEANUP_MODE:-dry-run}
 
 case "$TARGET_CONTAINER" in
     multienv-web-development|multienv-web-staging|multienv-web-production)
@@ -14,95 +15,116 @@ case "$TARGET_CONTAINER" in
         ;;
 esac
 
-echo "Backup retention target: $TARGET_CONTAINER"
-echo "Keeping the newest $KEEP_BACKUPS backups."
-echo "DRY-RUN: no containers will be removed."
+case "$CLEANUP_MODE" in
+    dry-run|delete) ;;
+    *)
+        echo "ERROR: CLEANUP_MODE must be dry-run or delete." >&2
+        exit 1
+        ;;
+esac
 
-# Create an isolated temporary directory for intermediate results.
-TMP_DIR=$(mktemp -d) || {
-    echo "ERROR: Cannot create temporary directory." >&2
-    exit 1
-}
-
+TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-BACKUPS_FILE="$TMP_DIR/backups"
-NUMERIC_FILE="$TMP_DIR/numeric"
+ALL_FILE="$TMP_DIR/all"
+MANAGED_FILE="$TMP_DIR/managed"
 SORTED_FILE="$TMP_DIR/sorted"
-OLD_BACKUPS_FILE="$TMP_DIR/old-backups"
+OLD_FILE="$TMP_DIR/old"
 
-# Stage 1: list matching containers.
+echo "Target: $TARGET_CONTAINER"
+echo "Retention: $KEEP_BACKUPS verified backups"
+echo "Mode: $CLEANUP_MODE"
+
 if ! docker ps -a \
     --filter "name=^/${TARGET_CONTAINER}-previous-[0-9][0-9]*$" \
-    --format '{{.Names}}' > "$BACKUPS_FILE"; then
+    --format '{{.Names}}' > "$ALL_FILE"; then
     echo "ERROR: Cannot list Docker containers." >&2
     exit 1
 fi
 
-# Stage 2: retain only backup names with numeric build suffixes.
-if ! awk -v prefix="${TARGET_CONTAINER}-previous-" '
-    $0 != "" && index($0, prefix) == 1 {
-        suffix = substr($0, length(prefix) + 1)
-        if (suffix ~ /^[0-9]+$/) {
-            print suffix, $0
-        }
-    }
-' "$BACKUPS_FILE" > "$NUMERIC_FILE"; then
-    echo "ERROR: Cannot validate backup names." >&2
-    exit 1
-fi
+: > "$MANAGED_FILE"
 
-# Stage 3: sort numerically by build number, newest first.
-if ! sort -rn "$NUMERIC_FILE" > "$SORTED_FILE"; then
-    echo "ERROR: Cannot sort backup names." >&2
-    exit 1
-fi
-
-# Stage 4: select backups beyond the retention limit.
-if ! awk -v keep="$KEEP_BACKUPS" \
-    'NR > keep { print $2 }' \
-    "$SORTED_FILE" > "$OLD_BACKUPS_FILE"; then
-    echo "ERROR: Cannot select old backups." >&2
-    exit 1
-fi
-
-if [ ! -s "$OLD_BACKUPS_FILE" ]; then
-    echo "No old backups to remove."
-    exit 0
-fi
-
-# DRY-RUN: validate each selected container and print the action.
 while IFS= read -r name; do
     [ -n "$name" ] || continue
 
+    prefix="${TARGET_CONTAINER}-previous-"
     case "$name" in
-        "${TARGET_CONTAINER}-previous-"[0-9]*)
-            suffix=${name#"${TARGET_CONTAINER}-previous-"}
+        "$prefix"[0-9]*)
+            suffix=${name#"$prefix"}
             case "$suffix" in
                 ''|*[!0-9]*)
-                    echo "ERROR: Invalid backup suffix: $name" >&2
-                    exit 1
+                    echo "SKIP: Invalid backup suffix: $name"
+                    continue
                     ;;
             esac
             ;;
         *)
-            echo "ERROR: Unexpected backup name: $name" >&2
-            exit 1
+            echo "SKIP: Unexpected backup name: $name"
+            continue
             ;;
     esac
 
-    if ! RUNNING=$(docker inspect -f '{{.State.Running}}' "$name"); then
-        echo "ERROR: Cannot inspect backup: $name" >&2
+    if ! labels=$(docker inspect -f \
+        '{{index .Config.Labels "managed-by"}}|{{index .Config.Labels "deployment-target"}}|{{.State.Running}}' \
+        "$name"); then
+        echo "ERROR: Cannot inspect $name; aborting." >&2
         exit 1
     fi
 
-    if [ "$RUNNING" = "true" ]; then
-        echo "ERROR: Backup is running; refusing cleanup: $name" >&2
+    case "$labels" in
+        "jenkins-deploy|$TARGET_CONTAINER|false")
+            printf '%s %s\n' "$suffix" "$name" >> "$MANAGED_FILE"
+            ;;
+        *"|true")
+            echo "SKIP: Running container: $name"
+            ;;
+        *)
+            echo "SKIP: Legacy or unverified backup: $name"
+            ;;
+    esac
+done < "$ALL_FILE"
+
+if ! sort -rn "$MANAGED_FILE" > "$SORTED_FILE"; then
+    echo "ERROR: Cannot sort verified backups." >&2
+    exit 1
+fi
+
+if ! awk -v keep="$KEEP_BACKUPS" \
+    'NR > keep { print $2 }' "$SORTED_FILE" > "$OLD_FILE"; then
+    echo "ERROR: Cannot select old backups." >&2
+    exit 1
+fi
+
+if [ ! -s "$OLD_FILE" ]; then
+    echo "No verified backups exceed retention."
+    exit 0
+fi
+
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+
+    # Revalidate immediately before any potential deletion.
+    if ! labels=$(docker inspect -f \
+        '{{index .Config.Labels "managed-by"}}|{{index .Config.Labels "deployment-target"}}|{{.State.Running}}' \
+        "$name"); then
+        echo "ERROR: Cannot revalidate $name; aborting." >&2
         exit 1
     fi
 
-    echo "Would remove: $name"
-done < "$OLD_BACKUPS_FILE"
+    if [ "$labels" != "jenkins-deploy|$TARGET_CONTAINER|false" ]; then
+        echo "ERROR: Safety validation failed for $name; aborting." >&2
+        exit 1
+    fi
+
+    if [ "$CLEANUP_MODE" = "dry-run" ]; then
+        echo "DRY-RUN: would remove $name"
+    else
+        echo "Removing verified backup: $name"
+        docker rm "$name"
+    fi
+done < "$OLD_FILE"
+
+echo "Cleanup finished."
