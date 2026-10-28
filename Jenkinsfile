@@ -91,21 +91,22 @@ void deployEnvironment(
         "IMAGE_REF=${imageRef}",
         "BACKUP_NAME=${backupName}",
         "EXPECTED_ENV=${expectedEnv}",
-        "DEPLOYMENT_ID=${env.BUILD_TAG}-${targetContainer}"
-]) {
-    sh '''
-        set -eu
-
-        flock -x /var/jenkins_home/deployment.lock sh -c '
+        "DEPLOYMENT_ID=${env.BUILD_TAG}-${targetContainer}",
+        'CLEANUP_MODE=dry-run'
+    ]) {
+        sh '''
             set -eu
-            sh deploy/deploy-container.sh
 
-            if ! sh deploy/cleanup-backups.sh; then
-                echo "WARNING: Backup cleanup failed; deployment remains successful."
-            fi
-        '
-    '''
-}
+            flock -x /var/jenkins_home/deployment.lock sh -c '
+                set -eu
+                sh deploy/deploy-container.sh
+
+                if ! sh deploy/cleanup-backups.sh; then
+                    echo "WARNING: Backup cleanup failed; deployment remains successful."
+                fi
+            '
+        '''
+    }
 }
 
 pipeline {
