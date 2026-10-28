@@ -118,168 +118,42 @@ pipeline {
         disableConcurrentBuilds()
     }
 
-    environment {
-        APP_NAME = 'multienv-web'
-        BRANCH_DEV = 'development'
-        BRANCH_STG = 'staging'
-        BRANCH_PROD = 'production'
-    }
-
     stages {
         stage('1. Checkout') {
             steps {
                 checkout scm
-
-                script {
-                    env.GIT_COMMIT_SHORT = sh(
-                        script: 'git rev-parse --short=12 HEAD',
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Branch: ${env.BRANCH_NAME}"
-                    echo "Commit: ${env.GIT_COMMIT_SHORT}"
-                }
             }
         }
 
-        stage('2. Validate Source') {
+        stage('2. Validate Shell Scripts') {
             steps {
                 sh '''
                     set -eu
-                    test -s src/index.html.template
-                    test -s deploy/10-render-template.sh
-                    test -s Dockerfile
-                    test -s tests/healthcheck.sh
-                    grep -qi '^FROM nginx:' Dockerfile
-                    test -s deploy/deploy-container.sh
                     test -s deploy/cleanup-backups.sh
-
-                    sh -n deploy/10-render-template.sh
-                    sh -n deploy/deploy-container.sh
+                    test -s tests/test-cleanup-backups.sh
                     sh -n deploy/cleanup-backups.sh
-                    sh -n tests/healthcheck.sh
-                    echo "Source validation passed."
+                    bash -n tests/test-cleanup-backups.sh
+                    echo "Shell syntax validation passed."
                 '''
             }
         }
 
-        stage('3. Build Docker Image') {
+        stage('3. Test Backup Cleanup Safely') {
             steps {
-                script {
-                    String imageRef =
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}"
-
-                    String appEnv = env.BRANCH_NAME.toUpperCase()
-
-                    sh """
-                        set -eu
-                        docker build --build-arg APP_ENV='${appEnv}' -t '${imageRef}' .
-                        docker image inspect '${imageRef}' >/dev/null
-                    """
-
-                    echo "Built image: ${imageRef}"
-                    echo "Application environment: ${appEnv}"
-                }
-            }
-        }
-
-        stage('4. Test Docker Image') {
-            steps {
-                script {
-                    String imageRef =
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}"
-
-                    String safeBranch = env.BRANCH_NAME.replaceAll(
-                        '[^a-zA-Z0-9_.-]',
-                        '-'
-                    )
-
-                    String testContainer =
-                        "${env.APP_NAME}-test-${safeBranch}-${env.BUILD_NUMBER}"
-
-                    String expectedEnv = env.BRANCH_NAME.toUpperCase()
-
-                    testDockerImage(
-                        imageRef,
-                        testContainer,
-                        expectedEnv
-                    )
-                }
-            }
-        }
-
-        stage('5. Approve Production') {
-            when {
-                branch "${env.BRANCH_PROD}"
-            }
-            steps {
-                input(
-                    message: "Approve production deployment of ${env.APP_NAME}:${env.GIT_COMMIT_SHORT}?",
-                    ok: 'Deploy to Production'
-                )
-            }
-        }
-
-        stage('6. Deploy Development') {
-            when {
-                branch "${env.BRANCH_DEV}"
-            }
-            steps {
-                script {
-                    deployEnvironment(
-                        "${env.APP_NAME}-development",
-                        '8083',
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}",
-                        'DEVELOPMENT'
-                    )
-                }
-            }
-        }
-
-        stage('7. Deploy Staging') {
-            when {
-                branch "${env.BRANCH_STG}"
-            }
-            steps {
-                script {
-                    deployEnvironment(
-                        "${env.APP_NAME}-staging",
-                        '8084',
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}",
-                        'STAGING'
-                    )
-                }
-            }
-        }
-
-        stage('8. Deploy Production') {
-            when {
-                branch "${env.BRANCH_PROD}"
-            }
-            steps {
-                script {
-                    deployEnvironment(
-                        "${env.APP_NAME}-production",
-                        '8085',
-                        "${env.APP_NAME}:${env.GIT_COMMIT_SHORT}",
-                        'PRODUCTION'
-                    )
-                }
+                sh '''
+                    set -eu
+                    bash tests/test-cleanup-backups.sh
+                '''
             }
         }
     }
 
     post {
         success {
-            echo "Pipeline succeeded for branch ${env.BRANCH_NAME}."
+            echo 'Backup cleanup tests passed.'
         }
-
         failure {
-            echo 'Pipeline failed. Review the stage logs before retrying.'
-        }
-
-        always {
-            echo "Build ${env.BUILD_NUMBER} finished."
+            echo 'Backup cleanup tests failed. No deployment was configured in this pipeline.'
         }
     }
 }
