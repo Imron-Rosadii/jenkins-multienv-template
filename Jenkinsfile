@@ -95,8 +95,15 @@ void deployEnvironment(
 ]) {
     sh '''
         set -eu
-        flock -x /var/jenkins_home/deployment.lock \
+
+        flock -x /var/jenkins_home/deployment.lock sh -c '
+            set -eu
             sh deploy/deploy-container.sh
+
+            if ! sh deploy/cleanup-backups.sh; then
+                echo "WARNING: Backup cleanup failed; deployment remains successful."
+            fi
+        '
     '''
 }
 }
@@ -144,8 +151,11 @@ pipeline {
                     test -s tests/healthcheck.sh
                     grep -qi '^FROM nginx:' Dockerfile
                     test -s deploy/deploy-container.sh
+                    test -s deploy/cleanup-backups.sh
+
                     sh -n deploy/10-render-template.sh
                     sh -n deploy/deploy-container.sh
+                    sh -n deploy/cleanup-backups.sh
                     sh -n tests/healthcheck.sh
                     echo "Source validation passed."
                 '''
