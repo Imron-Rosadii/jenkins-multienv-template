@@ -108,6 +108,15 @@ void deployEnvironment(
         '''
     }
 }
+pipeline {
+    agent any
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
     stages {
         stage('1. Checkout') {
             steps {
@@ -162,4 +171,4 @@ void deployEnvironment(
             echo 'Validation or test failed. Review the stage logs.'
         }
     }
-
+}
