@@ -15,6 +15,7 @@ export MOCK_DOCKER_FAIL_RM="${MOCK_DOCKER_FAIL_RM:-0}"
 export MOCK_DOCKER_BAD_PS="${MOCK_DOCKER_BAD_PS:-0}"
 export MOCK_DOCKER_CHANGE_ON_REVALIDATE="${MOCK_DOCKER_CHANGE_ON_REVALIDATE:-0}"
 export MOCK_DOCKER_INSPECT_COUNT="$TMP/inspect-count"
+export MOCK_DOCKER_INVALID_TIMESTAMP="${MOCK_DOCKER_INVALID_TIMESTAMP:-0}"
 : > "$MOCK_DOCKER_INSPECT_COUNT"
 export PATH="$TMP/bin:$PATH"
 
@@ -137,6 +138,12 @@ case "$cmd" in
             if [[ "$count" -ge 1 ]]; then
                 running=true
             fi
+        fi
+
+        if [[ "$MOCK_DOCKER_INVALID_TIMESTAMP" = 1 &&
+              "$name" = "multienv-web-production-previous-5" &&
+              "$INSPECT_MODE" = metadata ]]; then
+            created=2026-99-99T99:99:99Z
         fi
 
         if [[ "$INSPECT_MODE" = metadata ]]; then
@@ -306,6 +313,30 @@ assert_contains "$(cat "$TMP/revalidation.out")" \
 
 assert_no_removal
 echo "PASS: changed container state prevented removal"
+
+echo
+echo "=== TEST 9: INVALID TIMESTAMP ==="
+: > "$MOCK_DOCKER_RM_LOG"
+
+if MOCK_DOCKER_INVALID_TIMESTAMP=1 \
+    TARGET_CONTAINER=multienv-web-production \
+    CLEANUP_MODE=delete \
+    sh "$SCRIPT" > "$TMP/invalid-timestamp.out" 2>&1; then
+    echo "FAIL: invalid timestamp should abort cleanup" >&2
+    cat "$TMP/invalid-timestamp.out" >&2
+    exit 1
+fi
+
+if ! grep -Fq \
+    "Invalid creation timestamp for multienv-web-production-previous-5" \
+    "$TMP/invalid-timestamp.out"; then
+    echo "FAIL: expected invalid timestamp error not found" >&2
+    cat "$TMP/invalid-timestamp.out" >&2
+    exit 1
+fi
+
+assert_no_removal
+echo "PASS: invalid timestamp aborted cleanup without removal"
 
 echo
 echo "ALL TESTS PASSED"

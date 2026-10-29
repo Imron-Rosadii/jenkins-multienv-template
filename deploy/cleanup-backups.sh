@@ -83,12 +83,22 @@ while IFS= read -r name; do
 
     case "$managed_by|$deployment_target|$running" in
         "jenkins-deploy|$TARGET_CONTAINER|false")
-            case "$created" in
-                ''|*[!0-9TZ:.-]*)
-                    echo "ERROR: Invalid creation timestamp for $name; aborting." >&2
-                    exit 1
-                    ;;
-            esac
+                        # Validate the ISO-8601 UTC timestamp format first.
+            if ! printf '%s\n' "$created" |
+                grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$'; then
+                echo "ERROR: Invalid creation timestamp for $name; aborting." >&2
+                exit 1
+            fi
+
+            # Validate the actual calendar date and time, not just its format.
+            expected=${created%%.*}
+            expected=${expected%Z}
+
+            if ! parsed=$(date -u -d "$created" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null) ||
+                [ "$parsed" != "$expected" ]; then
+                echo "ERROR: Invalid creation timestamp for $name; aborting." >&2
+                exit 1
+            fi
 
             printf '%s %s\n' "$created" "$name" >> "$MANAGED_FILE"
             ;;
