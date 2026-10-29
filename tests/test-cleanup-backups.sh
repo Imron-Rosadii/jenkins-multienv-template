@@ -43,21 +43,14 @@ printf '\n' >> "$MOCK_DOCKER_CALL_LOG"
 
 case "$cmd" in
     ps)
-        if [[ "$#" -ne 4 ||
-              "$1" != "-a" ||
-              "$2" != "--filter" ||
-              "$3" != "name=^/multienv-web-production-previous-[0-9][0-9]*$" ||
-              "$4" != "--format" ]]; then
-            # The expected Docker command also includes the format value.
-            if [[ "$#" -ne 5 ||
-                  "$1" != "-a" ||
-                  "$2" != "--filter" ||
-                  "$3" != "name=^/multienv-web-production-previous-[0-9][0-9]*$" ||
-                  "$4" != "--format" ||
-                  "$5" != '{{.Names}}' ]]; then
-                echo "ERROR: unexpected docker ps arguments: $*" >&2
-                exit 64
-            fi
+        if [[ "$#" -ne 5 ||
+                "$1" != "-a" ||
+                "$2" != "--filter" ||
+                "$3" != "name=^/multienv-web-production-previous-[0-9][0-9]*$" ||
+                "$4" != "--format" ||
+                "$5" != '{{.Names}}' ]]; then
+            echo "ERROR: unexpected docker ps arguments: $*" >&2
+            exit 64
         fi
 
         if [[ "$MOCK_DOCKER_BAD_PS" = 1 ]]; then
