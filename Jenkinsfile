@@ -108,16 +108,6 @@ void deployEnvironment(
         '''
     }
 }
-
-pipeline {
-    agent any
-
-    options {
-        skipDefaultCheckout(true)
-        timestamps()
-        disableConcurrentBuilds()
-    }
-
     stages {
         stage('1. Checkout') {
             steps {
@@ -129,10 +119,17 @@ pipeline {
             steps {
                 sh '''
                     set -eu
+
                     test -s deploy/cleanup-backups.sh
+                    test -s deploy/deploy-container.sh
                     test -s tests/test-cleanup-backups.sh
+                    test -s tests/test-deploy-container.sh
+
                     sh -n deploy/cleanup-backups.sh
+                    sh -n deploy/deploy-container.sh
                     bash -n tests/test-cleanup-backups.sh
+                    bash -n tests/test-deploy-container.sh
+
                     echo "Shell syntax validation passed."
                 '''
             }
@@ -146,14 +143,23 @@ pipeline {
                 '''
             }
         }
+
+        stage('4. Test Deployment and Rollback') {
+            steps {
+                sh '''
+                    set -eu
+                    bash tests/test-deploy-container.sh
+                '''
+            }
+        }
     }
 
     post {
         success {
-            echo 'Backup cleanup tests passed.'
+            echo 'All shell validation and test suites passed.'
         }
         failure {
-            echo 'Backup cleanup tests failed. No deployment was configured in this pipeline.'
+            echo 'Validation or test failed. Review the stage logs.'
         }
     }
-}
+
