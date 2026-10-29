@@ -13,6 +13,9 @@ export MOCK_DOCKER_CALL_LOG="$TMP/calls.log"
 export MOCK_DOCKER_FAIL_INSPECT="${MOCK_DOCKER_FAIL_INSPECT:-0}"
 export MOCK_DOCKER_FAIL_RM="${MOCK_DOCKER_FAIL_RM:-0}"
 export MOCK_DOCKER_BAD_PS="${MOCK_DOCKER_BAD_PS:-0}"
+export MOCK_DOCKER_CHANGE_ON_REVALIDATE="${MOCK_DOCKER_CHANGE_ON_REVALIDATE:-0}"
+export MOCK_DOCKER_INSPECT_COUNT="$TMP/inspect-count"
+: > "$MOCK_DOCKER_INSPECT_COUNT"
 export PATH="$TMP/bin:$PATH"
 
 : > "$MOCK_DOCKER_RM_LOG"
@@ -68,6 +71,26 @@ case "$cmd" in
               "$name" = "multienv-web-production-previous-5" ]]; then
             echo "Mock inspect failure" >&2
             exit 42
+        fi
+
+        if [[ "$MOCK_DOCKER_CHANGE_ON_REVALIDATE" = 1 &&
+              "$name" = "multienv-web-production-previous-4" ]]; then
+            count=0
+
+            if [[ -s "$MOCK_DOCKER_INSPECT_COUNT" ]]; then
+                count=$(cat "$MOCK_DOCKER_INSPECT_COUNT")
+            fi
+
+            count=$((count + 1))
+            printf '%s\n' "$count" > "$MOCK_DOCKER_INSPECT_COUNT"
+
+            if [[ "$count" -ge 2 ]]; then
+                echo 'jenkins-deploy|multienv-web-production|true'
+            else
+                echo 'jenkins-deploy|multienv-web-production|false'
+            fi
+
+            exit 0
         fi
 
         case "$name" in
@@ -212,6 +235,25 @@ if MOCK_DOCKER_FAIL_RM=1 TARGET_CONTAINER=multienv-web-production \
     exit 1
 fi
 echo "PASS: docker rm failure returned non-zero"
+
+echo
+echo "=== TEST 8: CONTAINER STARTS BEFORE REMOVAL ==="
+: > "$MOCK_DOCKER_RM_LOG"
+: > "$MOCK_DOCKER_INSPECT_COUNT"
+
+if MOCK_DOCKER_CHANGE_ON_REVALIDATE=1 \
+    TARGET_CONTAINER=multienv-web-production \
+    CLEANUP_MODE=delete \
+    sh "$SCRIPT" > "$TMP/revalidation.out" 2>&1; then
+    echo "FAIL: cleanup should abort when backup starts running" >&2
+    exit 1
+fi
+
+assert_contains "$(cat "$TMP/revalidation.out")" \
+    "Safety validation failed for multienv-web-production-previous-4"
+
+assert_no_removal
+echo "PASS: changed container state prevented removal"
 
 echo
 echo "ALL TESTS PASSED"
