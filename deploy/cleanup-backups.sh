@@ -67,16 +67,30 @@ while IFS= read -r name; do
             ;;
     esac
 
-    if ! labels=$(docker inspect -f \
-        '{{index .Config.Labels "managed-by"}}|{{index .Config.Labels "deployment-target"}}|{{.State.Running}}' \
+    if ! metadata=$(docker inspect -f \
+        '{{index .Config.Labels "managed-by"}}|{{index .Config.Labels "deployment-target"}}|{{.State.Running}}|{{.Created}}' \
         "$name"); then
         echo "ERROR: Cannot inspect $name; aborting." >&2
         exit 1
     fi
 
-    case "$labels" in
+    managed_by=${metadata%%|*}
+    metadata=${metadata#*|}
+    deployment_target=${metadata%%|*}
+    metadata=${metadata#*|}
+    running=${metadata%%|*}
+    created=${metadata#*|}
+
+    case "$managed_by|$deployment_target|$running" in
         "jenkins-deploy|$TARGET_CONTAINER|false")
-            printf '%s %s\n' "$suffix" "$name" >> "$MANAGED_FILE"
+            case "$created" in
+                ''|*[!0-9TZ:.-]*)
+                    echo "ERROR: Invalid creation timestamp for $name; aborting." >&2
+                    exit 1
+                    ;;
+            esac
+
+            printf '%s %s\n' "$created" "$name" >> "$MANAGED_FILE"
             ;;
         *"|true")
             echo "SKIP: Running container: $name"
@@ -87,7 +101,7 @@ while IFS= read -r name; do
     esac
 done < "$ALL_FILE"
 
-if ! sort -rn "$MANAGED_FILE" > "$SORTED_FILE"; then
+if ! sort -r "$MANAGED_FILE" > "$SORTED_FILE"; then
     echo "ERROR: Cannot sort verified backups." >&2
     exit 1
 fi

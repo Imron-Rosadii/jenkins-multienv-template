@@ -43,10 +43,21 @@ printf '\n' >> "$MOCK_DOCKER_CALL_LOG"
 
 case "$cmd" in
     ps)
-        if [[ "$*" != *"--filter name=^/multienv-web-production-previous-[0-9][0-9]*$"* ||
-              "$*" != *"--format {{.Names}}"* ]]; then
-            echo "ERROR: unexpected docker ps arguments: $*" >&2
-            exit 64
+        if [[ "$#" -ne 4 ||
+              "$1" != "-a" ||
+              "$2" != "--filter" ||
+              "$3" != "name=^/multienv-web-production-previous-[0-9][0-9]*$" ||
+              "$4" != "--format" ]]; then
+            # The expected Docker command also includes the format value.
+            if [[ "$#" -ne 5 ||
+                  "$1" != "-a" ||
+                  "$2" != "--filter" ||
+                  "$3" != "name=^/multienv-web-production-previous-[0-9][0-9]*$" ||
+                  "$4" != "--format" ||
+                  "$5" != '{{.Names}}' ]]; then
+                echo "ERROR: unexpected docker ps arguments: $*" >&2
+                exit 64
+            fi
         fi
 
         if [[ "$MOCK_DOCKER_BAD_PS" = 1 ]]; then
@@ -58,14 +69,27 @@ case "$cmd" in
         ;;
 
     inspect)
-        if [[ "$#" -ne 3 ||
-              "$1" != "-f" ||
-              "$2" != '{{index .Config.Labels "managed-by"}}|{{index .Config.Labels "deployment-target"}}|{{.State.Running}}' ]]; then
+        if [[ "$#" -ne 3 || "$1" != "-f" ]]; then
             echo "ERROR: unexpected docker inspect arguments: $*" >&2
             exit 64
         fi
 
+        template=$2
         name=$3
+        INSPECT_MODE=
+
+        case "$template" in
+            '{{index .Config.Labels "managed-by"}}|{{index .Config.Labels "deployment-target"}}|{{.State.Running}}|{{.Created}}')
+                INSPECT_MODE=metadata
+                ;;
+            '{{index .Config.Labels "managed-by"}}|{{index .Config.Labels "deployment-target"}}|{{.State.Running}}')
+                INSPECT_MODE=labels
+                ;;
+            *)
+                echo "ERROR: unexpected docker inspect template: $template" >&2
+                exit 64
+                ;;
+        esac
 
         if [[ "$MOCK_DOCKER_FAIL_INSPECT" = 1 &&
               "$name" = "multienv-web-production-previous-5" ]]; then
@@ -73,10 +97,42 @@ case "$cmd" in
             exit 42
         fi
 
-        if [[ "$MOCK_DOCKER_CHANGE_ON_REVALIDATE" = 1 &&
-              "$name" = "multienv-web-production-previous-4" ]]; then
-            count=0
+        running=false
+        managed_by=jenkins-deploy
+        target=multienv-web-production
+        created=2026-10-20T10:00:00.000000000Z
 
+        case "$name" in
+            multienv-web-production-previous-7)
+                running=true
+                created=2026-10-20T10:00:00.000000000Z
+                ;;
+            multienv-web-production-previous-6)
+                created=2026-10-25T10:00:00.000000000Z
+                ;;
+            multienv-web-production-previous-5)
+                created=2026-10-24T10:00:00.000000000Z
+                ;;
+            multienv-web-production-previous-4)
+                created=2026-10-26T10:00:00.000000000Z
+                ;;
+            multienv-web-production-previous-3|\
+            multienv-web-production-previous-2)
+                managed_by=legacy
+                target=legacy
+                created=2026-10-19T10:00:00.000000000Z
+                ;;
+            *)
+                echo "Unknown mock container: $name" >&2
+                exit 1
+                ;;
+        esac
+
+        if [[ "$MOCK_DOCKER_CHANGE_ON_REVALIDATE" = 1 &&
+            "$name" = "multienv-web-production-previous-5" &&
+            "$INSPECT_MODE" = labels ]]; then
+
+            count=0
             if [[ -s "$MOCK_DOCKER_INSPECT_COUNT" ]]; then
                 count=$(cat "$MOCK_DOCKER_INSPECT_COUNT")
             fi
@@ -84,33 +140,19 @@ case "$cmd" in
             count=$((count + 1))
             printf '%s\n' "$count" > "$MOCK_DOCKER_INSPECT_COUNT"
 
-            if [[ "$count" -ge 2 ]]; then
-                echo 'jenkins-deploy|multienv-web-production|true'
-            else
-                echo 'jenkins-deploy|multienv-web-production|false'
+            # Simulate the container starting before the second label check.
+            if [[ "$count" -ge 1 ]]; then
+                running=true
             fi
-
-            exit 0
         fi
 
-        case "$name" in
-            multienv-web-production-previous-7)
-                echo 'jenkins-deploy|multienv-web-production|true'
-                ;;
-            multienv-web-production-previous-6|\
-            multienv-web-production-previous-5|\
-            multienv-web-production-previous-4)
-                echo 'jenkins-deploy|multienv-web-production|false'
-                ;;
-            multienv-web-production-previous-3|\
-            multienv-web-production-previous-2)
-                echo 'legacy|legacy|false'
-                ;;
-            *)
-                echo "Unknown mock container: $name" >&2
-                exit 1
-                ;;
-        esac
+        if [[ "$INSPECT_MODE" = metadata ]]; then
+            printf '%s|%s|%s|%s\n' \
+                "$managed_by" "$target" "$running" "$created"
+        else
+            printf '%s|%s|%s\n' \
+                "$managed_by" "$target" "$running"
+        fi
         ;;
 
     rm)
@@ -159,7 +201,7 @@ OUTPUT=$(TARGET_CONTAINER=multienv-web-production sh "$SCRIPT")
 assert_contains "$OUTPUT" "Mode: dry-run"
 assert_contains "$OUTPUT" "SKIP: Running container: multienv-web-production-previous-7"
 assert_contains "$OUTPUT" "SKIP: Legacy or unverified backup: multienv-web-production-previous-3"
-assert_contains "$OUTPUT" "DRY-RUN: would remove multienv-web-production-previous-4"
+assert_contains "$OUTPUT" "DRY-RUN: would remove multienv-web-production-previous-5"
 assert_no_removal
 grep -Fq -- '--filter name=^/multienv-web-production-previous-[0-9][0-9]*$' "$MOCK_DOCKER_CALL_LOG"
 grep -Fq -- '--format {{.Names}}' "$MOCK_DOCKER_CALL_LOG"
@@ -168,15 +210,15 @@ echo "PASS: dry-run and docker ps arguments verified"
 echo
 echo "=== TEST 2: DELETE MODE WITH MOCK ==="
 OUTPUT=$(TARGET_CONTAINER=multienv-web-production CLEANUP_MODE=delete sh "$SCRIPT")
-assert_contains "$OUTPUT" "Removing verified backup: multienv-web-production-previous-4"
+assert_contains "$OUTPUT" "Removing verified backup: multienv-web-production-previous-5"
 
-EXPECTED="multienv-web-production-previous-4"
+EXPECTED="multienv-web-production-previous-5"
 ACTUAL=$(cat "$MOCK_DOCKER_RM_LOG")
 [[ "$ACTUAL" = "$EXPECTED" ]] || {
     echo "FAIL: unexpected removal log: $ACTUAL" >&2
     exit 1
 }
-echo "PASS: only the oldest verified backup was selected"
+echo "PASS: timestamp-based retention selected the oldest verified backup"
 
 echo
 echo "=== TEST 3: INSPECT FAILURE ==="
@@ -246,11 +288,28 @@ if MOCK_DOCKER_CHANGE_ON_REVALIDATE=1 \
     CLEANUP_MODE=delete \
     sh "$SCRIPT" > "$TMP/revalidation.out" 2>&1; then
     echo "FAIL: cleanup should abort when backup starts running" >&2
+    echo "=== CLEANUP OUTPUT ===" >&2
+    cat "$TMP/revalidation.out" >&2
+    echo "=== DOCKER CALL LOG ===" >&2
+    cat "$MOCK_DOCKER_CALL_LOG" >&2
+    echo "=== REMOVAL LOG ===" >&2
+    cat "$MOCK_DOCKER_RM_LOG" >&2
+    exit 1
+fi
+
+if ! grep -Fq \
+    "Safety validation failed for multienv-web-production-previous-5" \
+    "$TMP/revalidation.out"; then
+    echo "FAIL: expected safety validation message not found" >&2
+    echo "=== CLEANUP OUTPUT ===" >&2
+    cat "$TMP/revalidation.out" >&2
+    echo "=== DOCKER CALL LOG ===" >&2
+    cat "$MOCK_DOCKER_CALL_LOG" >&2
     exit 1
 fi
 
 assert_contains "$(cat "$TMP/revalidation.out")" \
-    "Safety validation failed for multienv-web-production-previous-4"
+    "Safety validation failed for multienv-web-production-previous-5"
 
 assert_no_removal
 echo "PASS: changed container state prevented removal"
