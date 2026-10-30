@@ -379,4 +379,80 @@ IFS="|" read -r RUNNING DEPLOYMENT_ID HTML < "$(state_file "$BACKUP_NAME")"
 [[ "$RUNNING" == false && "$DEPLOYMENT_ID" == old-deployment ]]
 echo "PASS: failed rollback rename preserved old release under backup name"
 
+echo
+echo "=== TEST 10: INPUT VALIDATION ==="
+
+run_invalid_input() {
+    local description=$1
+    local expected_error=$2
+    shift 2
+
+    : > "$MOCK_DOCKER_LOG"
+
+    if env \
+        TARGET_CONTAINER=multienv-web-development \
+        TARGET_PORT=18083 \
+        IMAGE_REF=multienv-web:test \
+        BACKUP_NAME=multienv-web-development-previous-99 \
+        EXPECTED_ENV=Development \
+        DEPLOYMENT_ID=test-deployment-99 \
+        "$@" \
+        sh "$SCRIPT" > "$TMP/invalid-input.out" 2>&1; then
+
+        echo "FAIL: $description should be rejected" >&2
+        cat "$TMP/invalid-input.out" >&2
+        exit 1
+    fi
+
+    assert_contains "$(cat "$TMP/invalid-input.out")" "$expected_error"
+
+    if [[ -s "$MOCK_DOCKER_LOG" ]]; then
+        echo "FAIL: Docker should not run for invalid input: $description" >&2
+        cat "$MOCK_DOCKER_LOG" >&2
+        exit 1
+    fi
+
+    echo "PASS: $description rejected before Docker execution"
+}
+
+run_invalid_input \
+    "invalid target container" \
+    "Invalid Docker container name" \
+    TARGET_CONTAINER=invalid/name
+
+run_invalid_input \
+    "same target and backup name" \
+    "must be different" \
+    BACKUP_NAME=multienv-web-development
+
+run_invalid_input \
+    "invalid target port" \
+    "TARGET_PORT must contain only numbers" \
+    TARGET_PORT=abc
+
+run_invalid_input \
+    "port out of range" \
+    "between 1 and 65535" \
+    TARGET_PORT=70000
+
+run_invalid_input \
+    "invalid environment" \
+    "Invalid EXPECTED_ENV" \
+    EXPECTED_ENV=testing
+
+run_invalid_input \
+    "invalid deployment ID" \
+    "Invalid DEPLOYMENT_ID" \
+    DEPLOYMENT_ID=invalid/id
+
+run_invalid_input \
+    "empty image reference" \
+    "IMAGE_REF is required" \
+    IMAGE_REF=
+
+run_invalid_input \
+    "image reference containing whitespace" \
+    "must not contain whitespace" \
+    IMAGE_REF="invalid image"
+
 echo "ALL DEPLOYMENT TESTS PASSED"

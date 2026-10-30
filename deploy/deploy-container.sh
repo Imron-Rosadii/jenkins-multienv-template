@@ -11,6 +11,90 @@ set -eu
 OLD_CONTAINER_FOUND=0
 DEPLOYMENT_OK=0
 
+
+# Validate Docker container names.
+validate_container_name() {
+    name=$1
+
+    case "$name" in
+        ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_.-]*)
+            echo "ERROR: Invalid Docker container name: $name"
+            return 1
+            ;;
+    esac
+}
+
+# Validate target container name.
+validate_container_name "$TARGET_CONTAINER"
+
+# Validate backup container name.
+validate_container_name "$BACKUP_NAME"
+
+# Target and backup names must be different.
+if [ "$TARGET_CONTAINER" = "$BACKUP_NAME" ]; then
+    echo "ERROR: TARGET_CONTAINER and BACKUP_NAME must be different."
+    exit 1
+fi
+
+# Validate target port.
+case "$TARGET_PORT" in
+    ''|*[!0-9]*)
+        echo "ERROR: TARGET_PORT must contain only numbers."
+        exit 1
+        ;;
+esac
+
+# Remove leading zeros before numeric comparison.
+TARGET_PORT_NUM=$(printf '%s' "$TARGET_PORT" | sed 's/^0*//')
+TARGET_PORT_NUM=${TARGET_PORT_NUM:-0}
+
+# Avoid excessively large numeric input.
+if [ "${#TARGET_PORT_NUM}" -gt 5 ]; then
+    echo "ERROR: TARGET_PORT must be between 1 and 65535."
+    exit 1
+fi
+
+if [ "$TARGET_PORT_NUM" -lt 1 ] || [ "$TARGET_PORT_NUM" -gt 65535 ]; then
+    echo "ERROR: TARGET_PORT must be between 1 and 65535."
+    exit 1
+fi
+
+# Use normalized port value for Docker port mapping.
+TARGET_PORT=$TARGET_PORT_NUM
+
+# Validate expected environment.
+case "$EXPECTED_ENV" in
+    Development|Staging|Production)
+        ;;
+    *)
+        echo "ERROR: Invalid EXPECTED_ENV: $EXPECTED_ENV"
+        exit 1
+        ;;
+esac
+
+# Validate deployment ID.
+case "$DEPLOYMENT_ID" in
+    ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_.-]*)
+        echo "ERROR: Invalid DEPLOYMENT_ID."
+        exit 1
+        ;;
+esac
+
+# Validate image reference.
+case "$IMAGE_REF" in
+    '')
+        echo "ERROR: IMAGE_REF is required."
+        exit 1
+        ;;
+    *[[:space:]]*)
+        echo "ERROR: IMAGE_REF must not contain whitespace."
+        exit 1
+        ;;
+esac
+
+echo "Deployment input validation passed."
+
+
 rollback() {
     rc=$?
     trap - EXIT
