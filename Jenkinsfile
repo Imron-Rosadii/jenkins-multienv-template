@@ -108,6 +108,35 @@ void deployEnvironment(
         '''
     }
 }
+void resolveEnvironment() {
+    String branchName = env.BRANCH_NAME ?: ''
+    echo "Detected branch: ${branchName}"
+
+    switch (branchName) {
+        case 'development':
+            env.APP_ENV = 'DEVELOPMENT'
+            break
+
+        case 'staging':
+            env.APP_ENV = 'STAGING'
+            break
+
+        case 'production':
+            env.APP_ENV = 'PRODUCTION'
+            break
+
+        default:
+            env.APP_ENV = ''
+            echo "Branch '${branchName}' is CI-only. No deployment environment assigned."
+            break
+    }
+
+    if (env.APP_ENV) {
+        echo "Resolved APP_ENV: ${env.APP_ENV}"
+    } else {
+        echo 'APP_ENV: not assigned'
+    }
+}
 pipeline {
     agent any
 
@@ -161,8 +190,14 @@ pipeline {
                 '''
             }
         }
+        stage('5. Resolve Environment') {
+            steps {
+                script {
+                    resolveEnvironment()
+                }
+            }
+        }
     }
-
     post {
         success {
             echo 'All shell validation and test suites passed.'
