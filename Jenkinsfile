@@ -127,32 +127,31 @@ void resolveEnvironment() {
             env.APP_ENV = 'DEVELOPMENT'
             env.EXPECTED_ENV = 'Development'
             env.IMAGE_TAG = "development-${commitShort}"
-            env.DEPLOY_ENV_ENABLED = "${Boolean.TRUE}"
             break
 
         case 'staging':
             env.APP_ENV = 'STAGING'
             env.EXPECTED_ENV = 'Staging'
             env.IMAGE_TAG = "staging-${commitShort}"
-            env.DEPLOY_ENV_ENABLED = "${Boolean.TRUE}"
             break
 
         case 'production':
             env.APP_ENV = 'PRODUCTION'
             env.EXPECTED_ENV = 'Production'
             env.IMAGE_TAG = "production-${commitShort}"
-            env.DEPLOY_ENV_ENABLED = "${Boolean.TRUE}"
             break
 
         default:
             env.APP_ENV = ''
             env.EXPECTED_ENV = ''
             env.IMAGE_TAG = ''
-            env.DEPLOY_ENV_ENABLED = "${Boolean.FALSE}"
 
             echo "Branch '${branchName}' is CI-only."
             break
     }
+
+    // Determine whether this branch is allowed to build an image.
+    env.DEPLOY_ENV_ENABLED = env.APP_ENV ? 'true' : 'false'
 
     if (env.DEPLOY_ENV_ENABLED?.toBoolean()) {
         env.IMAGE_REF = "multienv-web:${env.IMAGE_TAG}"
