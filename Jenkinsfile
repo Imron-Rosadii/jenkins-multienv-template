@@ -14,10 +14,12 @@ void testDockerImage(
     String candidateName,
     String expectedEnv
 ) {
+    String imageExpectedEnv = expectedEnv.toUpperCase()
+
     withEnv([
         "IMAGE_REF=${imageRef}",
         "CANDIDATE_NAME=${candidateName}",
-        "EXPECTED_ENV=${expectedEnv}"
+        "EXPECTED_ENV=${imageExpectedEnv}"
     ]) {
         sh '''
             set -eu
@@ -108,35 +110,62 @@ void deployEnvironment(
         '''
     }
 }
+
 void resolveEnvironment() {
     String branchName = env.BRANCH_NAME ?: ''
+
+    String commitShort = sh(
+        script: 'git rev-parse --short=12 HEAD',
+        returnStdout: true
+    ).trim()
+
     echo "Detected branch: ${branchName}"
+    echo "Commit: ${commitShort}"
 
     switch (branchName) {
         case 'development':
             env.APP_ENV = 'DEVELOPMENT'
+            env.EXPECTED_ENV = 'Development'
+            env.IMAGE_TAG = "development-${commitShort}"
+            env.DEPLOY_ENV_ENABLED = "${Boolean.TRUE}"
             break
 
         case 'staging':
             env.APP_ENV = 'STAGING'
+            env.EXPECTED_ENV = 'Staging'
+            env.IMAGE_TAG = "staging-${commitShort}"
+            env.DEPLOY_ENV_ENABLED = "${Boolean.TRUE}"
             break
 
         case 'production':
             env.APP_ENV = 'PRODUCTION'
+            env.EXPECTED_ENV = 'Production'
+            env.IMAGE_TAG = "production-${commitShort}"
+            env.DEPLOY_ENV_ENABLED = "${Boolean.TRUE}"
             break
 
         default:
             env.APP_ENV = ''
-            echo "Branch '${branchName}' is CI-only. No deployment environment assigned."
+            env.EXPECTED_ENV = ''
+            env.IMAGE_TAG = ''
+            env.DEPLOY_ENV_ENABLED = "${Boolean.FALSE}"
+
+            echo "Branch '${branchName}' is CI-only."
             break
     }
 
-    if (env.APP_ENV) {
+    if (env.DEPLOY_ENV_ENABLED?.toBoolean()) {
+        env.IMAGE_REF = "multienv-web:${env.IMAGE_TAG}"
+
         echo "Resolved APP_ENV: ${env.APP_ENV}"
+        echo "Resolved EXPECTED_ENV: ${env.EXPECTED_ENV}"
+        echo "Resolved IMAGE_REF: ${env.IMAGE_REF}"
     } else {
-        echo 'APP_ENV: not assigned'
+        env.IMAGE_REF = ''
+        echo 'Docker build will be skipped.'
     }
 }
+
 pipeline {
     agent any
 
@@ -190,6 +219,7 @@ pipeline {
                 '''
             }
         }
+
         stage('5. Resolve Environment') {
             steps {
                 script {
@@ -197,13 +227,63 @@ pipeline {
                 }
             }
         }
+
+        stage('6. Build Docker Image') {
+            when {
+                expression {
+                    env.DEPLOY_ENV_ENABLED?.toBoolean()
+                }
+            }
+            steps {
+                script {
+                    echo "Building Docker image: ${env.IMAGE_REF}"
+
+                    sh '''
+                        set -eu
+
+                        docker build \
+                            --build-arg APP_ENV="$APP_ENV" \
+                            -t "$IMAGE_REF" \
+                            .
+
+                        echo "Docker image build completed."
+                        docker image inspect "$IMAGE_REF" \
+                            --format 'Image ID={{.Id}}'
+                    '''
+                }
+            }
+        }
+        stage('7. Test Docker Image') {
+            when {
+                expression {
+                    env.DEPLOY_ENV_ENABLED?.toBoolean()
+                }
+            }
+
+            steps {
+                script {
+                    String candidateName =
+                        "multienv-candidate-${env.BUILD_NUMBER}"
+
+                    echo "Testing Docker image: ${env.IMAGE_REF}"
+                    echo "Expected environment: ${env.EXPECTED_ENV}"
+
+                    testDockerImage(
+                        env.IMAGE_REF,
+                        candidateName,
+                        env.EXPECTED_ENV
+                    )
+                }
+            }
+        }
     }
+
     post {
         success {
-            echo 'All shell validation and test suites passed.'
+            echo 'All validation, shell tests, Docker build, and image tests passed.'
         }
         failure {
             echo 'Validation or test failed. Review the stage logs.'
         }
-    }
+}
 }
